@@ -70,7 +70,7 @@ def fetch_ajaib_stock_page(
     sort_type: str = "MARKET_CAP",
     sort_direction: str = "DESC",
 ) -> dict:
-    payload = _get_json(
+    payload = _get_json_cloudscraper(
         AJAIB_STOCK_LIST_URL,
         params={
             "page": page,

@@ -1,5 +1,5 @@
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 
 from app.validators import (
     validate_emiten_request,
@@ -31,6 +31,7 @@ def get_fundamental():
         response = fetch_and_build_fundamental(symbol, year, quarter)
         return jsonify(response)
     except Exception:
+        current_app.logger.exception("Failed to retrieve fundamental data from IDX")
         return jsonify({
             "status": "error",
             "message": "Failed to retrieve data from IDX. Please try again later."
@@ -61,6 +62,7 @@ def get_technical_analysis():
             "message": str(exc),
         }), 400
     except Exception:
+        current_app.logger.exception("Failed to fetch technical analysis")
         return jsonify({
             "status": "error",
             "message": "Failed to fetch technical analysis. Please try again later.",
@@ -89,6 +91,7 @@ def get_emiten():
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 404
     except Exception:
+        current_app.logger.exception("Failed to fetch emiten data")
         return jsonify({
             "status": "error",
             "message": "Failed to fetch emiten data. Please try again later.",
