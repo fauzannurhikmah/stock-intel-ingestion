@@ -74,3 +74,20 @@ def validate_emiten_request(body: dict) -> Tuple[Optional[str], int, int, str, s
         errors.append("'sort_direction' must be either 'ASC' or 'DESC'")
 
     return symbol, page, page_size, sort_type, sort_direction, errors
+
+
+def validate_shares_data_request(body: dict) -> Tuple[Optional[str], List[str]]:
+    body = body or {}
+    symbol = (
+        body.get("symbol")
+        or body.get("emiten")
+        or body.get("kode_emiten")
+        or ""
+    )
+    symbol = str(symbol).strip().upper() or None
+
+    errors = []
+    if not symbol:
+        errors.append("'symbol' is required (e.g. 'BBCA')")
+
+    return symbol, errors

@@ -1,6 +1,7 @@
 import requests
 import cloudscraper
 import re
+from datetime import datetime
 from io import BytesIO
 from pypdf import PdfReader
 from openpyxl import load_workbook
@@ -30,6 +31,36 @@ SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
 MAX_ATTACHMENTS_TO_PARSE = 4
 MAX_CHARS_PER_FILE = 8000
 MAX_TOTAL_CHARS = 14000
+
+SHARES_ANNOUNCEMENT_KEYWORD = "Laporan Bulanan Registrasi Pemegang Efek"
+SHARES_OUTSTANDING_KEYWORDS = [
+    "shares outstanding",
+    "total shares outstanding",
+    "saham beredar",
+    "jumlah saham beredar",
+    "jumlah lembar saham beredar",
+    "outstanding shares",
+]
+SHARES_FLOAT_KEYWORDS = [
+    "shares float",
+    "free float",
+    "saham float",
+    "saham publik",
+    "float shares",
+]
+SHARES_INSTITUTIONAL_KEYWORDS = [
+    "shares institutional",
+    "institutional",
+    "kepemilikan institusional",
+    "saham institusional",
+]
+SHARES_INSIDER_KEYWORDS = [
+    "shares insider",
+    "insider",
+    "kepemilikan insider",
+    "saham insider",
+    "manajemen dan insider",
+]
 
 PRIORITY_KEYWORDS = [
     "financial",
@@ -209,6 +240,215 @@ def _focus_financial_text(raw_text: str) -> str:
 
     focused_lines = [lines[i] for i in sorted(selected_indexes)]
     return "\n".join(focused_lines[:300])
+
+
+def _parse_idx_datetime(value):
+    if not value:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    candidate_formats = [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%d/%m/%Y %I:%M:%S %p",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+        "%Y%m%d",
+    ]
+
+    iso_candidates = [text]
+    if text.endswith("Z"):
+        iso_candidates.append(text[:-1] + "+00:00")
+
+    for candidate in iso_candidates:
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+
+    for candidate_format in candidate_formats:
+        try:
+            parsed = datetime.strptime(text, candidate_format)
+            if parsed.tzinfo is not None:
+                parsed = parsed.replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            continue
+
+    return None
+
+
+def _format_report_date(value):
+    parsed = _parse_idx_datetime(value)
+    if not parsed:
+        return None
+    return parsed.date().isoformat()
+
+
+def _normalize_announcement_reply(reply: dict) -> dict:
+    pengumuman = reply.get("pengumuman") or {}
+    attachments = reply.get("attachments") or reply.get("Attachments") or []
+    title = str(pengumuman.get("JudulPengumuman") or "").strip()
+    announcement_dt = _parse_idx_datetime(pengumuman.get("TglPengumuman") or pengumuman.get("CreatedDate"))
+
+    return {
+        "title": title,
+        "date": announcement_dt,
+        "month_key": announcement_dt.strftime("%Y-%m") if announcement_dt else None,
+        "attachments": attachments,
+        "raw": reply,
+    }
+
+
+def _select_monthly_announcements(replies: list[dict]) -> list[dict]:
+    grouped = {}
+    for reply in replies:
+        normalized = _normalize_announcement_reply(reply)
+        month_key = normalized.get("month_key")
+        if not month_key:
+            continue
+
+        current = grouped.get(month_key)
+        if current is None:
+            grouped[month_key] = normalized
+            continue
+
+        current_title = str(current.get("title") or "").lower()
+        candidate_title = str(normalized.get("title") or "").lower()
+        current_is_correction = "koreksi" in current_title
+        candidate_is_correction = "koreksi" in candidate_title
+
+        if candidate_is_correction and not current_is_correction:
+            grouped[month_key] = normalized
+            continue
+
+        if candidate_is_correction == current_is_correction:
+            current_date = current.get("date")
+            candidate_date = normalized.get("date")
+            if candidate_date and (not current_date or candidate_date > current_date):
+                grouped[month_key] = normalized
+
+    return sorted(
+        grouped.values(),
+        key=lambda item: item.get("date") or datetime.min,
+    )
+
+
+def _clean_numeric_value(value):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    normalized = re.sub(r"[^\d]", "", text)
+    if len(normalized) < 4:
+        return None
+
+    try:
+        number = int(normalized)
+    except ValueError:
+        return None
+
+    return number if number > 0 else None
+
+
+def _extract_metric_from_text(lines: list[str], keywords: list[str]) -> int | None:
+    lowered_lines = [line.lower() for line in lines]
+
+    for index, lower_line in enumerate(lowered_lines):
+        if not any(keyword in lower_line for keyword in keywords):
+            continue
+
+        search_window = "\n".join(lines[index:index + 4])
+        numeric_matches = []
+        for match in re.finditer(r"\d[\d.,]*", search_window):
+            cleaned = _clean_numeric_value(match.group(0))
+            if cleaned is not None:
+                numeric_matches.append(cleaned)
+
+        if numeric_matches:
+            return max(numeric_matches)
+
+    return None
+
+
+def _parse_shares_report_text(text: str, announcement_date: str | None = None) -> dict:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return {
+        "date": announcement_date,
+        "sharesOutstanding": _extract_metric_from_text(lines, SHARES_OUTSTANDING_KEYWORDS),
+        "sharesFloat": _extract_metric_from_text(lines, SHARES_FLOAT_KEYWORDS),
+        "sharesInstitutional": _extract_metric_from_text(lines, SHARES_INSTITUTIONAL_KEYWORDS),
+        "sharesInsider": _extract_metric_from_text(lines, SHARES_INSIDER_KEYWORDS),
+    }
+
+
+def _get_announcement_full_save_path(reply: dict) -> str:
+    attachments = reply.get("attachments") or reply.get("Attachments") or []
+    for attachment in attachments:
+        full_save_path = str(attachment.get("FullSavePath") or attachment.get("File_Path") or "").strip()
+        if full_save_path.lower().endswith(".pdf"):
+            return full_save_path
+    first_attachment = attachments[0] if attachments else {}
+    return str(first_attachment.get("FullSavePath") or first_attachment.get("File_Path") or "").strip()
+
+
+def fetch_idx_shares_announcements(symbol: str, date_from: str = "19010101", date_to: str | None = None) -> list[dict]:
+    url = "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement"
+    params = {
+        "kodeEmiten": symbol.upper(),
+        "emitenType": "s",
+        "indexFrom": 0,
+        "pageSize": 100,
+        "dateFrom": date_from,
+        "dateTo": date_to or datetime.now().strftime("%Y%m%d"),
+        "lang": "id",
+        "keyword": SHARES_ANNOUNCEMENT_KEYWORD,
+    }
+    response = _get(url, params)
+    replies = response.get("Replies") or response.get("Results") or []
+    return replies if isinstance(replies, list) else []
+
+
+def scrape_shares_data(symbol: str) -> dict:
+    replies = fetch_idx_shares_announcements(symbol)
+    selected_replies = _select_monthly_announcements(replies)
+
+    items = []
+    for reply in selected_replies:
+        raw_reply = reply.get("raw") or {}
+        pengumuman = raw_reply.get("pengumuman") or {}
+        announcement_date = _format_report_date(pengumuman.get("TglPengumuman") or pengumuman.get("CreatedDate") or reply.get("date"))
+        file_url = _get_announcement_full_save_path(raw_reply or reply)
+        if not file_url:
+            continue
+
+        try:
+            content = _download_file(file_url)
+            extracted_text = _extract_pdf_text(content)
+        except Exception:
+            extracted_text = ""
+
+        item = _parse_shares_report_text(extracted_text, announcement_date=announcement_date)
+        if item.get("date") is None:
+            item["date"] = announcement_date
+        items.append(item)
+
+    items.sort(key=lambda item: item.get("date") or "")
+
+    return {
+        "symbol": symbol.upper(),
+        "count": len(items),
+        "items": items,
+    }
 
 def _collect_report_text(raw_data: dict) -> tuple[str, list[dict]]:
     attachments = raw_data.get("Attachments") or []
