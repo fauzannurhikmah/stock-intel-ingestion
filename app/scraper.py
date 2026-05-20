@@ -360,6 +360,250 @@ def _clean_numeric_value(value):
     return number if number > 0 else None
 
 
+def _normalize_share_report_text(text: str) -> str:
+    normalized = str(text or "")
+    normalized = re.sub(r"(?<=[.,])\s+(?=\d)", "", normalized)
+    normalized = re.sub(r"(?<=\d)\s+(?=[.,]\d)", "", normalized)
+    return normalized
+
+
+def _extract_integer_values(text: str, include_zero: bool = False) -> list[int]:
+    values = []
+    for match in re.finditer(r"-|\d{1,3}(?:[.,]\d{3})+|\d+", text or ""):
+        token = match.group(0)
+        tail = text[match.end():match.end() + 3]
+        if "%" in tail:
+            continue
+        if token == "-":
+            if include_zero:
+                values.append(0)
+            continue
+
+        cleaned = _clean_numeric_value(token)
+        if cleaned is not None:
+            values.append(cleaned)
+        elif include_zero and re.fullmatch(r"0+", token):
+            values.append(0)
+    return values
+
+
+def _extract_values_after_phrases(
+    text: str,
+    phrases: list[str],
+    window: int = 400,
+    include_zero: bool = False,
+) -> list[int]:
+    normalized = _normalize_share_report_text(text)
+    lower_text = normalized.lower()
+
+    for phrase in phrases:
+        index = lower_text.find(phrase.lower())
+        if index == -1:
+            continue
+        segment = normalized[index + len(phrase):index + len(phrase) + window]
+        values = _extract_integer_values(segment, include_zero=include_zero)
+        if values:
+            return values
+
+    return []
+
+
+def _extract_first_after_phrases(
+    text: str,
+    phrases: list[str],
+    window: int = 400,
+    include_zero: bool = False,
+) -> int | None:
+    values = _extract_values_after_phrases(
+        text,
+        phrases,
+        window=window,
+        include_zero=include_zero,
+    )
+    return values[0] if values else None
+
+
+def _extract_best_first_after_phrases(
+    text: str,
+    phrases: list[str],
+    window: int = 400,
+    include_zero: bool = False,
+) -> int | None:
+    normalized = _normalize_share_report_text(text)
+    lower_text = normalized.lower()
+    first_values = []
+
+    for phrase in phrases:
+        lower_phrase = phrase.lower()
+        start = 0
+        while True:
+            index = lower_text.find(lower_phrase, start)
+            if index == -1:
+                break
+            segment = normalized[index + len(phrase):index + len(phrase) + window]
+            values = _extract_integer_values(segment, include_zero=include_zero)
+            if values:
+                first_values.append(values[0])
+            start = index + len(phrase)
+
+    return max(first_values) if first_values else None
+
+
+def _extract_max_after_phrases(text: str, phrases: list[str], window: int = 400) -> int | None:
+    values = _extract_values_after_phrases(text, phrases, window=window)
+    return max(values) if values else None
+
+
+def _extract_free_float_table_values(text: str) -> list[int]:
+    return _extract_values_after_phrases(
+        text,
+        [
+            "Jumlah saham Free Float",
+            "The amount of Free Float Share",
+        ],
+        window=600,
+        include_zero=True,
+    )
+
+
+def _extract_reported_free_float(text: str) -> int | None:
+    values = _extract_free_float_table_values(text)
+    if values:
+        return values[0]
+
+    values = _extract_values_after_phrases(
+        text,
+        [
+            "Informasi Saham Free Float",
+            "Free Float Share Information",
+        ],
+        window=500,
+        include_zero=True,
+    )
+    if len(values) >= 2:
+        return values[1]
+    if values:
+        return values[0]
+    return None
+
+
+def _extract_bod_boc_shares(text: str) -> int | None:
+    normalized = _normalize_share_report_text(text)
+    section_patterns = [
+        (
+            "Investor Type & Classification Number of Shares",
+            "Number of Scripless Shares based on Investor Type and Classification from KSEI",
+        ),
+        (
+            "Tipe dan Klasifikasi Investor Jumlah Saham",
+            "Jumlah Saham Scripless berdasarkan Tipe dan Klasifikasi Investor dari KSEI",
+        ),
+    ]
+
+    for start_marker, end_marker in section_patterns:
+        start = normalized.find(start_marker)
+        if start == -1:
+            continue
+        end = normalized.find(end_marker, start)
+        if end == -1:
+            continue
+
+        section = normalized[start:end]
+        if "BOD / BOC" not in section and "Direksi dan Dewan Komisaris" not in section:
+            continue
+
+        values = _extract_integer_values(section, include_zero=True)
+        if len(values) >= 2:
+            return values[1]
+
+    return None
+
+
+def _extract_director_commissioner_ownership(text: str) -> int | None:
+    normalized = _normalize_share_report_text(text)
+    section_markers = [
+        "Laporan Kepemilikan Saham Oleh Direksi dan Komisaris",
+        "Share Ownership Report by Directors and Commissioners",
+    ]
+    end_markers = [
+        "Informasi Saham Free Float",
+        "Free Float Share Information",
+    ]
+
+    for marker in section_markers:
+        start = normalized.find(marker)
+        if start == -1:
+            continue
+
+        end_candidates = [
+            normalized.find(end_marker, start)
+            for end_marker in end_markers
+            if normalized.find(end_marker, start) != -1
+        ]
+        end = min(end_candidates) if end_candidates else start + 5000
+        section = normalized[start:end]
+
+        current_values = []
+        for match in re.finditer(
+            r"(\d{1,3}(?:[.,]\d{3})+)\s+\d+(?:[,.]\d+)?%\s+"
+            r"(\d{1,3}(?:[.,]\d{3})+)\s+\d+(?:[,.]\d+)?%",
+            section,
+        ):
+            cleaned = _clean_numeric_value(match.group(2))
+            if cleaned is not None:
+                current_values.append(cleaned)
+
+        if current_values:
+            return sum(current_values)
+
+    return None
+
+
+def _extract_free_float_bod_boc_shares(text: str) -> int | None:
+    values = _extract_free_float_table_values(text)
+    unique_values = []
+    for value in values:
+        if value not in unique_values:
+            unique_values.append(value)
+
+    if len(unique_values) >= 2:
+        candidate = unique_values[1]
+        if candidate < 1_000_000_000:
+            return candidate
+    return None
+
+
+def _extract_shares_metrics_from_report(text: str) -> dict:
+    shares_outstanding = _extract_max_after_phrases(
+        text,
+        [
+            "Total",
+        ],
+        window=160,
+    )
+    shares_float = _extract_reported_free_float(text)
+    shares_institutional = _extract_best_first_after_phrases(
+        text,
+        [
+            "Financial Institutional (IB)",
+        ],
+        window=80,
+        include_zero=True,
+    )
+    shares_insider = (
+        _extract_bod_boc_shares(text)
+        or _extract_director_commissioner_ownership(text)
+        or _extract_free_float_bod_boc_shares(text)
+    )
+
+    return {
+        "sharesOutstanding": shares_outstanding,
+        "sharesFloat": shares_float,
+        "sharesInstitutional": shares_institutional,
+        "sharesInsider": shares_insider,
+    }
+
+
 def _extract_metric_from_text(lines: list[str], keywords: list[str]) -> int | None:
     lowered_lines = [line.lower() for line in lines]
 
@@ -367,9 +611,17 @@ def _extract_metric_from_text(lines: list[str], keywords: list[str]) -> int | No
         if not any(keyword in lower_line for keyword in keywords):
             continue
 
+        same_line_matches = []
+        for match in re.finditer(r"\d{1,3}(?:[.,]\d{3})+|\d+", lines[index]):
+            cleaned = _clean_numeric_value(match.group(0))
+            if cleaned is not None:
+                same_line_matches.append(cleaned)
+        if same_line_matches:
+            return max(same_line_matches)
+
         search_window = "\n".join(lines[index:index + 4])
         numeric_matches = []
-        for match in re.finditer(r"\d[\d.,]*", search_window):
+        for match in re.finditer(r"\d{1,3}(?:[.,]\d{3})+|\d+", search_window):
             cleaned = _clean_numeric_value(match.group(0))
             if cleaned is not None:
                 numeric_matches.append(cleaned)
@@ -382,13 +634,39 @@ def _extract_metric_from_text(lines: list[str], keywords: list[str]) -> int | No
 
 def _parse_shares_report_text(text: str, announcement_date: str | None = None) -> dict:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    report_metrics = _extract_shares_metrics_from_report(text)
     return {
         "date": announcement_date,
-        "sharesOutstanding": _extract_metric_from_text(lines, SHARES_OUTSTANDING_KEYWORDS),
-        "sharesFloat": _extract_metric_from_text(lines, SHARES_FLOAT_KEYWORDS),
-        "sharesInstitutional": _extract_metric_from_text(lines, SHARES_INSTITUTIONAL_KEYWORDS),
-        "sharesInsider": _extract_metric_from_text(lines, SHARES_INSIDER_KEYWORDS),
+        "sharesOutstanding": report_metrics.get("sharesOutstanding") or _extract_metric_from_text(lines, SHARES_OUTSTANDING_KEYWORDS),
+        "sharesFloat": report_metrics.get("sharesFloat") or _extract_metric_from_text(lines, SHARES_FLOAT_KEYWORDS),
+        "sharesInstitutional": report_metrics.get("sharesInstitutional") or _extract_metric_from_text(lines, SHARES_INSTITUTIONAL_KEYWORDS),
+        "sharesInsider": report_metrics.get("sharesInsider") or _extract_metric_from_text(lines, SHARES_INSIDER_KEYWORDS),
     }
+
+
+def _fill_missing_share_metrics(items: list[dict]) -> list[dict]:
+    carry_fields = ["sharesOutstanding", "sharesFloat", "sharesInsider"]
+
+    for field in carry_fields:
+        last_value = None
+        for item in items:
+            if item.get(field) is None:
+                item[field] = last_value
+            else:
+                last_value = item.get(field)
+
+        next_value = None
+        for item in reversed(items):
+            if item.get(field) is None:
+                item[field] = next_value
+            else:
+                next_value = item.get(field)
+
+    for item in items:
+        if item.get("sharesInstitutional") is None:
+            item["sharesInstitutional"] = 0
+
+    return items
 
 
 def _get_announcement_full_save_path(reply: dict) -> str:
@@ -405,7 +683,7 @@ def fetch_idx_shares_announcements(symbol: str, date_from: str = "19010101", dat
     url = "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement"
     params = {
         "kodeEmiten": symbol.upper(),
-        "emitenType": "s",
+        "emitenType": "*",
         "indexFrom": 0,
         "pageSize": 100,
         "dateFrom": date_from,
@@ -443,6 +721,7 @@ def scrape_shares_data(symbol: str) -> dict:
         items.append(item)
 
     items.sort(key=lambda item: item.get("date") or "")
+    _fill_missing_share_metrics(items)
 
     return {
         "symbol": symbol.upper(),
