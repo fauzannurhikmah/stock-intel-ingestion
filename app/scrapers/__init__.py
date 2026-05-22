@@ -15,7 +15,8 @@ from app.scrapers.fundamental import (
     scrape_fundamental,
     find_shareholders,
 )
-from app.scrapers.income_statement import (
+from app.scrapers.financial_statement import (
     fetch_financial_report_results,
+    scrape_financial_statement,
     scrape_income_statement,
 )

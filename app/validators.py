@@ -26,7 +26,7 @@ def validate_fundamental_request(body: dict) -> Tuple[str, Any, Any, List[str]]:
     return symbol, year, quarter, errors
 
 
-def validate_income_statement_request(body: dict) -> Tuple[Optional[str], Any, List[str]]:
+def validate_financial_statement_request(body: dict) -> Tuple[Optional[str], Any, List[str]]:
     body = body or {}
     symbol = (
         body.get("symbol")

@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 
 from app.validators import (
     validate_corporate_action_request,
-    validate_income_statement_request,
+    validate_financial_statement_request,
     validate_emiten_request,
     validate_fundamental_request,
     validate_shares_data_request,
@@ -11,7 +11,7 @@ from app.validators import (
     validate_stock_price_request,
 )
 from app.services.corporate_action_service import fetch_and_build_corporate_action
-from app.services.income_statement_service import fetch_and_build_income_statement
+from app.services.financial_statement_service import fetch_and_build_financial_statement
 from app.services.fundamental_service import fetch_and_build_fundamental
 from app.services.emiten_service import scrape_emiten_detail, scrape_emiten_list
 from app.services.shares_service import fetch_and_build_shares_data
@@ -45,22 +45,22 @@ def get_fundamental():
         }), 502
 
 
-@bp.route("/income-statement", methods=["GET"])
-def get_income_statement():
+@bp.route("/financial-statement", methods=["GET"])
+def get_financial_statement():
     query = request.args.to_dict(flat=True)
-    symbol, year, errors = validate_income_statement_request(query)
+    symbol, year, errors = validate_financial_statement_request(query)
     if errors:
         return jsonify({"status": "error", "errors": errors}), 400
 
     try:
-        result = fetch_and_build_income_statement(symbol, year)
+        result = fetch_and_build_financial_statement(symbol, year)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 404
     except Exception:
         return jsonify({
             "status": "error",
-            "message": "Failed to fetch income statement data from IDX. Please try again later.",
+            "message": "Failed to fetch financial statement data from IDX. Please try again later.",
         }), 502
 
 

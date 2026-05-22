@@ -21,7 +21,8 @@ from app.scrapers.fundamental import (
     find_shareholders,
     find_largest_shareholder,
 )
-from app.scrapers.income_statement import (
+from app.scrapers.financial_statement import (
     fetch_financial_report_results,
+    scrape_financial_statement,
     scrape_income_statement,
 )

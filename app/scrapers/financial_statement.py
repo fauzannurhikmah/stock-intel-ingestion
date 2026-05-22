@@ -59,6 +59,39 @@ NUMERIC_ALIASES = {
     "sharesWeightedAvg": ["weightedaverageshares", "sharesweightedavg", "rataratasahamberedartertimbang"],
 }
 
+BALANCE_NUMERIC_ALIASES = {
+    "cash": ["cash", "kasdansetarakas", "kasdanbank", "cashandcashequivalents"],
+    "shortTermInvestments": ["shortterminvestments", "investasijangkapendek", "marketablesecurities"],
+    "accountsReceivable": ["accountsreceivable", "piutangusaha", "tradeandotherreceivables"],
+    "inventory": ["inventory", "persediaan"],
+    "otherCurrentAssets": ["othercurrentassets", "asetlancarlainnya", "asetlancarllain"],
+    "totalCurrentAssets": ["totalcurrentassets", "jumlahasetlancar", "asetlancar"],
+    "propertyPlantEquipment": ["propertyplantequipment", "asettetap", "fixedassets"],
+    "intangibleAssets": ["intangibleassets", "asettakberwujud", "asettidakberwujud"],
+    "goodwill": ["goodwill"],
+    "longTermInvestments": ["longterminvestments", "investasijangkapanjang"],
+    "otherNonCurrentAssets": ["othernoncurrentassets", "asettidaklancarlainnya", "asetnonlancarlainnya"],
+    "totalNonCurrentAssets": ["totalnoncurrentassets", "jumlahasettidaklancar", "asettidaklancar"],
+    "totalAssets": ["totalassets", "jumlahaset", "totalaset"],
+    "shortTermDebt": ["shorttermdebt", "utangjangkapendek", "pinjamanjangkapendek", "liabilitasjangkapendekberbunga"],
+    "accountsPayable": ["accountspayable", "utangusaha", "tradepayables"],
+    "deferredRevenue": ["deferredrevenue", "pendapatanditerimadimuka"],
+    "otherCurrentLiabilities": ["othercurrentliabilities", "liabilitaslancarlainnya", "utanglancarlainnya"],
+    "totalCurrentLiabilities": ["totalcurrentliabilities", "jumlahlibilitaslancar", "liabilitaslancar"],
+    "longTermDebt": ["longtermdebt", "utangjangkapanjang", "pinjamanjangkapanjang", "liabilitasjangkapanjangberbunga"],
+    "deferredTaxLiabilities": ["deferredtaxliabilities", "liabilitaspajaktangguhan"],
+    "otherNonCurrentLiabilities": ["othernoncurrentliabilities", "liabilitasjangkapanjanglainnya", "liabilitasnonlancarlainnya"],
+    "totalNonCurrentLiabilities": ["totalnoncurrentliabilities", "jumlahliabilitasjangkapanjang", "liabilitasnonlancar"],
+    "totalLiabilities": ["totalliabilities", "jumlahliabilitas", "totalliabilitas"],
+    "commonStock": ["commonstock", "modaldisetor", "modal saham", "issuedandfullypaidcapital"],
+    "additionalPaidInCapital": ["additionalpaidincapital", "tambahanmodaldisetor", "agio"],
+    "retainedEarnings": ["retainedearnings", "saldo laba", "labaditahan"],
+    "treasuryStock": ["treasurystock", "sahamtreasury", "sahamdiperoleh kembali"],
+    "otherEquity": ["otherequity", "ekuitaslainnya"],
+    "minorityInterestEquity": ["minorityinterestequity", "kepentingannonpengendali", "noncontrollinginterest"],
+    "totalEquity": ["totalequity", "jumlahekuitas", "totalekuitas"],
+}
+
 FIELD_BLOCKED_TOKENS = {
     "incomeTaxExpense": ["sebelumpajak", "beforetax"],
 }
@@ -246,6 +279,15 @@ def _sheet_score(sheet_name: str) -> int:
     lower = (sheet_name or "").lower()
     score = 0
     for keyword in ["income", "laba", "rugi", "statement", "komprehensif", "profit"]:
+        if keyword in lower:
+            score += 3
+    return score
+
+
+def _balance_sheet_score(sheet_name: str) -> int:
+    lower = (sheet_name or "").lower()
+    score = 0
+    for keyword in ["balance", "position", "neraca", "aset", "liabilitas", "ekuitas"]:
         if keyword in lower:
             score += 3
     return score
@@ -478,6 +520,103 @@ def _extract_sheet_metrics(rows: list[list[Any]], year: int) -> dict[str, Any]:
     return metrics
 
 
+def _extract_balance_metrics(rows: list[list[Any]], year: int) -> dict[str, Any]:
+    year_columns = _find_year_columns(rows, year)
+    unit_multiplier = _detect_unit_multiplier(rows)
+    metrics: dict[str, Any] = {}
+
+    for field, aliases in BALANCE_NUMERIC_ALIASES.items():
+        metrics[field] = _extract_field_numeric(rows, aliases, year_columns, year, unit_multiplier, field_name=field)
+
+    metrics["currency"] = _extract_currency(rows)
+
+    # Derived values
+    current_assets = metrics.get("totalCurrentAssets")
+    current_liabilities = metrics.get("totalCurrentLiabilities")
+    cash = metrics.get("cash")
+    short_debt = metrics.get("shortTermDebt")
+    long_debt = metrics.get("longTermDebt")
+    total_equity = metrics.get("totalEquity")
+
+    if isinstance(current_assets, (int, float)) and isinstance(current_liabilities, (int, float)):
+        metrics["workingCapital"] = float(current_assets) - float(current_liabilities)
+    else:
+        metrics["workingCapital"] = None
+
+    debt_total = 0.0
+    has_debt = False
+    if isinstance(short_debt, (int, float)):
+        debt_total += float(short_debt)
+        has_debt = True
+    if isinstance(long_debt, (int, float)):
+        debt_total += float(long_debt)
+        has_debt = True
+    if has_debt:
+        metrics["netDebt"] = debt_total - float(cash or 0.0)
+    else:
+        metrics["netDebt"] = None
+
+    # Try to derive residual buckets when totals are present.
+    known_current_assets = sum(
+        float(metrics.get(key) or 0.0)
+        for key in ["cash", "shortTermInvestments", "accountsReceivable", "inventory"]
+        if isinstance(metrics.get(key), (int, float))
+    )
+    if metrics.get("otherCurrentAssets") is None and isinstance(current_assets, (int, float)):
+        residual = float(current_assets) - known_current_assets
+        metrics["otherCurrentAssets"] = residual if abs(residual) > 1e-6 else 0.0
+
+    known_non_current_assets = sum(
+        float(metrics.get(key) or 0.0)
+        for key in ["propertyPlantEquipment", "intangibleAssets", "goodwill", "longTermInvestments"]
+        if isinstance(metrics.get(key), (int, float))
+    )
+    if metrics.get("otherNonCurrentAssets") is None and isinstance(metrics.get("totalNonCurrentAssets"), (int, float)):
+        residual = float(metrics["totalNonCurrentAssets"]) - known_non_current_assets
+        metrics["otherNonCurrentAssets"] = residual if abs(residual) > 1e-6 else 0.0
+
+    if metrics.get("totalNonCurrentAssets") is None and isinstance(metrics.get("totalAssets"), (int, float)) and isinstance(current_assets, (int, float)):
+        metrics["totalNonCurrentAssets"] = float(metrics["totalAssets"]) - float(current_assets)
+
+    known_current_liabilities = sum(
+        float(metrics.get(key) or 0.0)
+        for key in ["shortTermDebt", "accountsPayable", "deferredRevenue"]
+        if isinstance(metrics.get(key), (int, float))
+    )
+    if metrics.get("otherCurrentLiabilities") is None and isinstance(current_liabilities, (int, float)):
+        residual = float(current_liabilities) - known_current_liabilities
+        metrics["otherCurrentLiabilities"] = residual if abs(residual) > 1e-6 else 0.0
+
+    if metrics.get("totalNonCurrentLiabilities") is None and isinstance(metrics.get("totalLiabilities"), (int, float)) and isinstance(current_liabilities, (int, float)):
+        metrics["totalNonCurrentLiabilities"] = float(metrics["totalLiabilities"]) - float(current_liabilities)
+
+    known_non_current_liabilities = sum(
+        float(metrics.get(key) or 0.0)
+        for key in ["longTermDebt", "deferredTaxLiabilities"]
+        if isinstance(metrics.get(key), (int, float))
+    )
+    if metrics.get("otherNonCurrentLiabilities") is None and isinstance(metrics.get("totalNonCurrentLiabilities"), (int, float)):
+        residual = float(metrics["totalNonCurrentLiabilities"]) - known_non_current_liabilities
+        metrics["otherNonCurrentLiabilities"] = residual if abs(residual) > 1e-6 else 0.0
+
+    known_equity = sum(
+        float(metrics.get(key) or 0.0)
+        for key in ["commonStock", "additionalPaidInCapital", "retainedEarnings", "treasuryStock", "minorityInterestEquity"]
+        if isinstance(metrics.get(key), (int, float))
+    )
+    if metrics.get("otherEquity") is None and isinstance(total_equity, (int, float)):
+        residual = float(total_equity) - known_equity
+        metrics["otherEquity"] = residual if abs(residual) > 1e-6 else 0.0
+
+    shares = metrics.get("sharesWeightedAvg")
+    if isinstance(total_equity, (int, float)) and isinstance(shares, (int, float)) and shares not in (0, 0.0):
+        metrics["bookValuePerShare"] = round(float(total_equity) / float(shares), 4)
+    else:
+        metrics["bookValuePerShare"] = None
+
+    return metrics
+
+
 def _sheet_quality_score(metrics: dict[str, Any]) -> float:
     core_fields = ["revenue", "operatingIncome", "pretaxIncome", "netIncome", "interestIncome", "interestExpense"]
     hits = sum(1 for key in core_fields if metrics.get(key) not in (None, 0))
@@ -491,38 +630,84 @@ def _sheet_quality_score(metrics: dict[str, Any]) -> float:
     return hits * 1_000_000_000_000 + magnitude
 
 
-def _parse_workbook(content: bytes, year: int) -> dict[str, Any]:
+def _balance_sheet_quality_score(metrics: dict[str, Any]) -> float:
+    core_fields = ["totalAssets", "totalLiabilities", "totalEquity", "totalCurrentAssets", "totalCurrentLiabilities"]
+    hits = sum(1 for key in core_fields if metrics.get(key) not in (None, 0))
+    magnitude = 0.0
+    for key in ["totalAssets", "totalLiabilities", "totalEquity"]:
+        value = metrics.get(key)
+        if isinstance(value, (int, float)):
+            magnitude += abs(float(value))
+    return hits * 1_000_000_000_000 + magnitude
+
+
+def _parse_workbook(content: bytes, year: int) -> tuple[dict[str, Any], dict[str, Any]]:
     wb = load_workbook(filename=BytesIO(content), read_only=True, data_only=True)
-    sheets = sorted(wb.worksheets, key=lambda s: _sheet_score(s.title), reverse=True)
+    income_sheets = sorted(wb.worksheets, key=lambda s: _sheet_score(s.title), reverse=True)
+    balance_sheets = sorted(wb.worksheets, key=lambda s: _balance_sheet_score(s.title), reverse=True)
 
-    merged_metrics = {field: None for field in NUMERIC_ALIASES.keys()}
-    merged_metrics["revenueGrowthYoY"] = None
-    merged_metrics["currency"] = None
+    merged_income = {field: None for field in NUMERIC_ALIASES.keys()}
+    merged_income["revenueGrowthYoY"] = None
+    merged_income["currency"] = None
+    merged_balance = {field: None for field in BALANCE_NUMERIC_ALIASES.keys()}
+    merged_balance["currency"] = None
+    merged_balance["bookValuePerShare"] = None
+    merged_balance["netDebt"] = None
+    merged_balance["workingCapital"] = None
 
-    sheet_results: list[dict[str, Any]] = []
+    income_results: list[dict[str, Any]] = []
+    balance_results: list[dict[str, Any]] = []
 
-    for sheet in sheets:
+    for sheet in income_sheets:
         rows = _normalize_rows(sheet)
         if not rows:
             continue
 
         sheet_metrics = _extract_sheet_metrics(rows, year)
-        sheet_results.append(sheet_metrics)
+        income_results.append(sheet_metrics)
 
         for key, value in sheet_metrics.items():
-            current = merged_metrics.get(key)
+            current = merged_income.get(key)
             if current is None and value is not None:
-                merged_metrics[key] = value
+                merged_income[key] = value
 
-    # Pick the strongest sheet as primary baseline when available.
-    if sheet_results:
-        best = max(sheet_results, key=_sheet_quality_score)
+    for sheet in balance_sheets:
+        rows = _normalize_rows(sheet)
+        if not rows:
+            continue
+
+        sheet_metrics = _extract_balance_metrics(rows, year)
+        balance_results.append(sheet_metrics)
+
+        for key, value in sheet_metrics.items():
+            current = merged_balance.get(key)
+            if current is None and value is not None:
+                merged_balance[key] = value
+
+    if income_results:
+        best = max(income_results, key=_sheet_quality_score)
         for key, value in best.items():
             if value is not None:
-                merged_metrics[key] = value
+                merged_income[key] = value
+
+    if balance_results:
+        best = max(balance_results, key=_balance_sheet_quality_score)
+        for key, value in best.items():
+            if value is not None:
+                merged_balance[key] = value
+
+    # Use shares from income side when available for BVPS derivation.
+    shares = merged_income.get("sharesWeightedAvg")
+    if (
+        merged_balance.get("bookValuePerShare") is None
+        and isinstance(merged_balance.get("totalEquity"), (int, float))
+        and isinstance(shares, (int, float))
+        and shares not in (0, 0.0)
+    ):
+        merged_balance["bookValuePerShare"] = round(float(merged_balance["totalEquity"]) / float(shares), 4)
 
     wb.close()
-    return merged_metrics
+    return merged_income, merged_balance
 
 
 def _build_statement_item(result: dict, parsed: dict, fallback_year: int) -> dict:
@@ -561,6 +746,54 @@ def _build_statement_item(result: dict, parsed: dict, fallback_year: int) -> dic
         "eps": parsed.get("eps"),
         "epsDiluted": parsed.get("epsDiluted"),
         "sharesWeightedAvg": parsed.get("sharesWeightedAvg"),
+    }
+
+
+def _build_balance_sheet_item(result: dict, parsed: dict, fallback_year: int) -> dict:
+    fiscal_year = int(result.get("Report_Year") or result.get("report_year") or fallback_year)
+    period = _normalize_period(result)
+    quarter = _fiscal_quarter(period)
+
+    return {
+        "period": period,
+        "fiscalYear": fiscal_year,
+        "fiscalQuarter": quarter,
+        "periodEndDate": _period_end_date(fiscal_year, quarter),
+        "currency": parsed.get("currency") or "IDR",
+        "auditStatus": _audit_status(period),
+        "cash": parsed.get("cash"),
+        "shortTermInvestments": parsed.get("shortTermInvestments"),
+        "accountsReceivable": parsed.get("accountsReceivable"),
+        "inventory": parsed.get("inventory"),
+        "otherCurrentAssets": parsed.get("otherCurrentAssets"),
+        "totalCurrentAssets": parsed.get("totalCurrentAssets"),
+        "propertyPlantEquipment": parsed.get("propertyPlantEquipment"),
+        "intangibleAssets": parsed.get("intangibleAssets"),
+        "goodwill": parsed.get("goodwill"),
+        "longTermInvestments": parsed.get("longTermInvestments"),
+        "otherNonCurrentAssets": parsed.get("otherNonCurrentAssets"),
+        "totalNonCurrentAssets": parsed.get("totalNonCurrentAssets"),
+        "totalAssets": parsed.get("totalAssets"),
+        "shortTermDebt": parsed.get("shortTermDebt"),
+        "accountsPayable": parsed.get("accountsPayable"),
+        "deferredRevenue": parsed.get("deferredRevenue"),
+        "otherCurrentLiabilities": parsed.get("otherCurrentLiabilities"),
+        "totalCurrentLiabilities": parsed.get("totalCurrentLiabilities"),
+        "longTermDebt": parsed.get("longTermDebt"),
+        "deferredTaxLiabilities": parsed.get("deferredTaxLiabilities"),
+        "otherNonCurrentLiabilities": parsed.get("otherNonCurrentLiabilities"),
+        "totalNonCurrentLiabilities": parsed.get("totalNonCurrentLiabilities"),
+        "totalLiabilities": parsed.get("totalLiabilities"),
+        "commonStock": parsed.get("commonStock"),
+        "additionalPaidInCapital": parsed.get("additionalPaidInCapital"),
+        "retainedEarnings": parsed.get("retainedEarnings"),
+        "treasuryStock": parsed.get("treasuryStock"),
+        "otherEquity": parsed.get("otherEquity"),
+        "minorityInterestEquity": parsed.get("minorityInterestEquity"),
+        "totalEquity": parsed.get("totalEquity"),
+        "bookValuePerShare": parsed.get("bookValuePerShare"),
+        "netDebt": parsed.get("netDebt"),
+        "workingCapital": parsed.get("workingCapital"),
     }
 
 
@@ -694,12 +927,14 @@ def _apply_bank_derivations(item: dict) -> dict:
     return item
 
 
-def scrape_income_statement(symbol: str, year: int) -> dict:
+def scrape_financial_statement(symbol: str, year: int) -> dict:
     results = fetch_financial_report_results(symbol, year)
     spreadsheets = _collect_spreadsheet_attachments(results)
 
-    items: list[dict] = []
-    seen_period_year: set[tuple[str, int]] = set()
+    income_items: list[dict] = []
+    balance_items: list[dict] = []
+    seen_income_period_year: set[tuple[str, int]] = set()
+    seen_balance_period_year: set[tuple[str, int]] = set()
 
     for result, attachment in spreadsheets:
         file_name = str(attachment.get("File_Name") or attachment.get("file_name") or "")
@@ -709,36 +944,62 @@ def scrape_income_statement(symbol: str, year: int) -> dict:
 
         try:
             content = _download_file(file_url)
-            parsed = _parse_workbook(content, year)
-            item = _build_statement_item(result, parsed, fallback_year=year)
-            item["period"] = _resolve_period(result, file_name)
-            item["fiscalQuarter"] = _fiscal_quarter(item["period"])
-            item["periodEndDate"] = _period_end_date(int(item["fiscalYear"]), item["fiscalQuarter"])
-            item["auditStatus"] = _audit_status(item["period"])
+            parsed_income, parsed_balance = _parse_workbook(content, year)
+
+            income_item = _build_statement_item(result, parsed_income, fallback_year=year)
+            income_item["period"] = _resolve_period(result, file_name)
+            income_item["fiscalQuarter"] = _fiscal_quarter(income_item["period"])
+            income_item["periodEndDate"] = _period_end_date(int(income_item["fiscalYear"]), income_item["fiscalQuarter"])
+            income_item["auditStatus"] = _audit_status(income_item["period"])
+
+            balance_item = _build_balance_sheet_item(result, parsed_balance, fallback_year=year)
+            balance_item["period"] = _resolve_period(result, file_name)
+            balance_item["fiscalQuarter"] = _fiscal_quarter(balance_item["period"])
+            balance_item["periodEndDate"] = _period_end_date(int(balance_item["fiscalYear"]), balance_item["fiscalQuarter"])
+            balance_item["auditStatus"] = _audit_status(balance_item["period"])
         except Exception:
             continue
 
-        dedup_key = (str(item.get("period") or ""), int(item.get("fiscalYear") or year))
-        if dedup_key in seen_period_year:
-            continue
+        income_dedup_key = (str(income_item.get("period") or ""), int(income_item.get("fiscalYear") or year))
+        if income_dedup_key not in seen_income_period_year:
+            income_numeric_hits = sum(
+                1 for key in ["revenue", "operatingIncome", "pretaxIncome", "netIncome", "ebit"] if income_item.get(key) not in (None, 0)
+            )
+            if income_numeric_hits > 0:
+                seen_income_period_year.add(income_dedup_key)
+                income_item = _normalize_monetary_scale(income_item)
+                income_item = _apply_bank_derivations(income_item)
+                income_items.append(income_item)
 
-        # Skip rows that failed to extract meaningful financial values.
-        numeric_hits = sum(
-            1 for key in ["revenue", "operatingIncome", "pretaxIncome", "netIncome", "ebit"] if item.get(key) not in (None, 0)
-        )
-        if numeric_hits == 0:
-            continue
+        balance_dedup_key = (str(balance_item.get("period") or ""), int(balance_item.get("fiscalYear") or year))
+        if balance_dedup_key not in seen_balance_period_year:
+            balance_numeric_hits = sum(
+                1
+                for key in ["totalAssets", "totalLiabilities", "totalEquity", "totalCurrentAssets", "totalCurrentLiabilities"]
+                if balance_item.get(key) not in (None, 0)
+            )
+            if balance_numeric_hits > 0:
+                seen_balance_period_year.add(balance_dedup_key)
+                balance_item = _normalize_monetary_scale(balance_item)
+                balance_items.append(balance_item)
 
-        seen_period_year.add(dedup_key)
-        item = _normalize_monetary_scale(item)
-        item = _apply_bank_derivations(item)
-        items.append(item)
-
-    items.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
+    income_items.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
+    balance_items.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
     return {
         "status": "ok",
         "symbol": symbol.upper(),
         "year": year,
-        "count": len(items),
-        "items": items,
+        "income_statement": {
+            "count": len(income_items),
+            "items": income_items,
+        },
+        "balance_sheet": {
+            "count": len(balance_items),
+            "items": balance_items,
+        },
     }
+
+
+def scrape_income_statement(symbol: str, year: int) -> dict:
+    # Backward-compatible alias for internal imports that may still call old name.
+    return scrape_financial_statement(symbol, year)
