@@ -12,8 +12,9 @@ from app.validators import (
 )
 from app.services.corporate_action_service import fetch_and_build_corporate_action
 from app.services.financial_statement_service import fetch_and_build_financial_statement
-from app.services.fundamental_service import fetch_and_build_fundamental
 from app.services.emiten_service import scrape_emiten_detail, scrape_emiten_list
+from app.services.emiten_service import fetch_ajaib_stock_market
+from app.services.fundamental_service import fetch_and_build_fundamental
 from app.services.shares_service import fetch_and_build_shares_data
 from app.services.stock_price_service import fetch_and_build_stock_price
 from app.serializers.emiten_serializer import serialize_emiten_detail, serialize_emiten_list
@@ -138,6 +139,18 @@ def get_shares_data():
         return jsonify({
             "status": "error",
             "message": "Failed to fetch shares data from IDX. Please try again later.",
+        }), 502
+
+
+@bp.route("/ajaib-stock-market", methods=["GET"])
+def get_ajaib_stock_market():
+    try:
+        result = fetch_ajaib_stock_market()
+        return jsonify(result)
+    except Exception:
+        return jsonify({
+            "status": "error",
+            "message": "Failed to fetch Ajaib stock market data. Please try again later.",
         }), 502
 
 

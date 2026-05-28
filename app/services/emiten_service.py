@@ -91,6 +91,19 @@ def fetch_ajaib_stock_page(
     }
 
 
+def fetch_ajaib_stock_market() -> dict:
+    return _get_json_cloudscraper(
+        AJAIB_STOCK_LIST_URL,
+        params={
+            "page": 1,
+            "page_size": 9999,
+            "sort_type": "PCT_CHANGE_1_DAY",
+            "sort_direction": "ASC",
+        },
+        headers=AJAIB_HEADERS,
+    )
+
+
 def _normalize_ajaib_item(item: dict) -> dict:
     return {
         "symbol": item.get("code"),

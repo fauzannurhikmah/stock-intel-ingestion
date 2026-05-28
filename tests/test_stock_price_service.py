@@ -54,3 +54,34 @@ def test_stock_price_route_returns_payload(monkeypatch):
     body = response.get_json()
     assert body["KodeEmiten"] == "BBCA"
     assert body["replies"][0]["StockCode"] == "BBCA"
+
+
+def test_ajaib_stock_market_route_returns_payload(monkeypatch):
+    def fake_fetch_ajaib_stock_market():
+        return {
+            "err_code": "EC0000000",
+            "err_message": "APPROVED/OK",
+            "result": {
+                "count": 1,
+                "results": [
+                    {
+                        "code": "BBCA",
+                        "name": "Bank Central Asia Tbk.",
+                        "price": 6100,
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr("app.routes.fetch_ajaib_stock_market", fake_fetch_ajaib_stock_market)
+
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/api/ajaib-stock-market")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["err_code"] == "EC0000000"
+    assert body["result"]["count"] == 1
+    assert body["result"]["results"][0]["code"] == "BBCA"
