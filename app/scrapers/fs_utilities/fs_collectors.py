@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Tuple, Dict
 
 from app.scrapers.common import BASE_URL, _get
-from app.scrapers.fs_utils import _normalize_file_extension, _score_attachment, SUPPORTED_EXTENSIONS, MAX_ATTACHMENTS_TO_PARSE
+from app.scrapers.fs_utilities.fs_utils import _normalize_file_extension, _score_attachment, SUPPORTED_EXTENSIONS, MAX_ATTACHMENTS_TO_PARSE
 
 
 def fetch_financial_report_results(symbol: str, year: int) -> list[dict]:
