@@ -21,6 +21,8 @@ from app.services.shares_service import fetch_and_build_shares_data
 from app.services.stock_price_service import fetch_and_build_stock_price
 from app.serializers.emiten_serializer import serialize_emiten_detail, serialize_emiten_list
 from utils.technical import fetch_technical_analysis
+from app.validators_financial_statement_ai import validate_financial_statement_ai_request
+from app.services.financial_statement_ai_service import fetch_and_build_financial_statement_ai
 
 
 bp = Blueprint("main", __name__, url_prefix="/api")
@@ -215,3 +217,23 @@ def get_financial_statement_v2():
             "status": "error",
             "message": "Failed to fetch financial statement v2 data from IDX. Please try again later.",
         }), 502
+
+
+@bp.route("/financial-statement-ai", methods=["GET"])
+def get_financial_statement_ai():
+    query = request.args.to_dict(flat=True)
+    symbol, year, sector, errors = validate_financial_statement_ai_request(query)
+    if errors:
+        return jsonify({"status": "error", "errors": errors}), 400
+
+    try:
+        result = fetch_and_build_financial_statement_ai(symbol, year, sector)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 404
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to fetch financial statement AI data: {str(e)}",
+        }), 502
+
