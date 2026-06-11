@@ -193,6 +193,70 @@ class TestFinancialStatementAiRoute(unittest.TestCase):
         self.assertEqual(cash_flow_item["netCashFromInvesting"], -25981888000000)
         self.assertEqual(cash_flow_item["confidence"], 0.94)
 
+    @patch("app.scrapers.financial_statement_ai.fetch_financial_report_results")
+    @patch("app.scrapers.financial_statement_ai._download_file")
+    @patch("app.scrapers.financial_statement_ai._extract_attachment_text")
+    @patch("app.scrapers.financial_statement_ai.ai_extract_financial_statements")
+    def test_scrape_financial_statement_ai_dedupes_normalized_periods(
+        self,
+        mock_ai_extract,
+        mock_extract,
+        mock_download,
+        mock_fetch
+    ):
+        mock_fetch.return_value = [
+            {
+                "Report_Period": "TW2",
+                "Report_Year": "2025",
+                "Attachments": [
+                    {
+                        "File_Name": "FinancialStatement-2025-II-BBCA.pdf",
+                        "File_Path": "/fake/report.pdf",
+                        "File_Type": ".pdf",
+                    }
+                ],
+            }
+        ]
+        mock_download.return_value = b"%PDF-1.4 fake bytes"
+        mock_extract.return_value = "fake extracted text"
+        mock_ai_extract.return_value = {
+            "income_statement": [
+                {
+                    "period": "TW2",
+                    "fiscalYear": 2025,
+                    "fiscalQuarter": 2,
+                    "periodEndDate": "2025-06-30",
+                    "auditStatus": "UNAUDITED",
+                    "currency": "IDR",
+                    "confidence": 0.81,
+                    "revenue": 100,
+                    "netIncome": 10,
+                },
+                {
+                    "period": "Q2",
+                    "fiscalYear": 2025,
+                    "fiscalQuarter": 2,
+                    "periodEndDate": "2025-06-30",
+                    "auditStatus": "UNAUDITED",
+                    "currency": "IDR",
+                    "confidence": 0.93,
+                    "revenue": 200,
+                    "netIncome": 20,
+                },
+            ],
+            "balance_sheet": [],
+            "cash_flow_statement": [],
+        }
+
+        payload = ai_module.scrape_financial_statement_ai("bbca", 2025, sector="keuangan")
+
+        self.assertEqual(payload["income_statement"]["count"], 1)
+        income_item = payload["income_statement"]["items"][0]
+        self.assertEqual(income_item["period"], "Q2")
+        self.assertEqual(income_item["confidence"], 0.93)
+        self.assertEqual(income_item["revenue"], 200)
+        self.assertEqual(income_item["netIncome"], 20)
+
 
 if __name__ == "__main__":
     unittest.main()

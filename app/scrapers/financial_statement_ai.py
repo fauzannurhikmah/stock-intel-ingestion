@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 from typing import Any, Dict, List, Optional
 
 from app.scrapers.common import BASE_URL, _download_file, _extract_attachment_text
@@ -19,6 +20,44 @@ from app.scrapers.fs_utilities.fs_builders import (
     _normalize_cash_flow_scale,
     _apply_bank_derivations,
 )
+
+
+def _normalize_ai_period(period: Any) -> str:
+    raw_period = str(period or "").strip().upper()
+    if not raw_period:
+        return ""
+
+    compact = "".join(ch for ch in raw_period if ch.isalnum())
+
+    if any(token in compact for token in {"AUDIT", "ANNUAL", "FULL", "TAHUNAN"}):
+        return "AUDIT"
+    if re.search(r"(\bQ1\b|\bTW1\b|TRIWULAN\s*1|TRIWULAN\s*I|QUARTER\s*1)", raw_period):
+        return "Q1"
+    if re.search(r"(\bQ2\b|\bTW2\b|TRIWULAN\s*2|TRIWULAN\s*II|QUARTER\s*2)", raw_period):
+        return "Q2"
+    if re.search(r"(\bQ3\b|\bTW3\b|TRIWULAN\s*3|TRIWULAN\s*III|QUARTER\s*3)", raw_period):
+        return "Q3"
+    if re.search(r"(\bQ4\b|\bTW4\b|TRIWULAN\s*4|TRIWULAN\s*IV|QUARTER\s*4)", raw_period):
+        return "Q4"
+
+    return raw_period
+
+
+def _merge_statement_item(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing)
+
+    existing_confidence = float(existing.get("confidence") or 0.0)
+    incoming_confidence = float(incoming.get("confidence") or 0.0)
+    prefer_incoming = incoming_confidence > existing_confidence
+
+    for key, value in incoming.items():
+        if key == "confidence":
+            continue
+        if prefer_incoming or merged.get(key) in (None, ""):
+            merged[key] = value
+
+    merged["confidence"] = max(existing_confidence, incoming_confidence)
+    return merged
 
 
 def _ai_call(prompt: str) -> dict:
@@ -262,7 +301,7 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
             cash_flow_list = ai_data.get("cash_flow_statement") or []
 
             for item in income_list:
-                period = item.get("period")
+                period = _normalize_ai_period(item.get("period"))
                 f_year = item.get("fiscalYear") or year
                 if not period or not f_year:
                     continue
@@ -270,6 +309,7 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                 if dedup_key not in seen_income_period_year:
                     seen_income_period_year.add(dedup_key)
                     # Normalize metadata fields
+                    item["period"] = period
                     item["fiscalYear"] = int(f_year)
                     item["fiscalQuarter"] = _fiscal_quarter(period)
                     item["periodEndDate"] = _period_end_date(int(f_year), item["fiscalQuarter"])
@@ -279,9 +319,26 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                     item = _normalize_monetary_scale(item)
                     item = _apply_bank_derivations(item)
                     income_items.append(item)
+                else:
+                    for index, existing in enumerate(income_items):
+                        existing_key = (
+                            str(existing.get("period") or ""),
+                            int(existing.get("fiscalYear") or 0),
+                        )
+                        if existing_key == dedup_key:
+                            item["period"] = period
+                            item["fiscalYear"] = int(f_year)
+                            item["fiscalQuarter"] = _fiscal_quarter(period)
+                            item["periodEndDate"] = _period_end_date(int(f_year), item["fiscalQuarter"])
+                            item["auditStatus"] = _audit_status(period)
+                            item["confidence"] = float(item.get("confidence") or 0.0)
+                            item = _normalize_monetary_scale(item)
+                            item = _apply_bank_derivations(item)
+                            income_items[index] = _merge_statement_item(existing, item)
+                            break
 
             for item in balance_list:
-                period = item.get("period")
+                period = _normalize_ai_period(item.get("period"))
                 f_year = item.get("fiscalYear") or year
                 if not period or not f_year:
                     continue
@@ -289,6 +346,7 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                 if dedup_key not in seen_balance_period_year:
                     seen_balance_period_year.add(dedup_key)
                     # Normalize metadata fields
+                    item["period"] = period
                     item["fiscalYear"] = int(f_year)
                     item["fiscalQuarter"] = _fiscal_quarter(period)
                     item["periodEndDate"] = _period_end_date(int(f_year), item["fiscalQuarter"])
@@ -296,9 +354,25 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                     item["confidence"] = float(item.get("confidence") or 0.0)
                     item = _normalize_monetary_scale(item)
                     balance_items.append(item)
+                else:
+                    for index, existing in enumerate(balance_items):
+                        existing_key = (
+                            str(existing.get("period") or ""),
+                            int(existing.get("fiscalYear") or 0),
+                        )
+                        if existing_key == dedup_key:
+                            item["period"] = period
+                            item["fiscalYear"] = int(f_year)
+                            item["fiscalQuarter"] = _fiscal_quarter(period)
+                            item["periodEndDate"] = _period_end_date(int(f_year), item["fiscalQuarter"])
+                            item["auditStatus"] = _audit_status(period)
+                            item["confidence"] = float(item.get("confidence") or 0.0)
+                            item = _normalize_monetary_scale(item)
+                            balance_items[index] = _merge_statement_item(existing, item)
+                            break
 
             for item in cash_flow_list:
-                period = item.get("period")
+                period = _normalize_ai_period(item.get("period"))
                 f_year = item.get("fiscalYear") or year
                 if not period or not f_year:
                     continue
@@ -306,6 +380,7 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                 if dedup_key not in seen_cash_flow_period_year:
                     seen_cash_flow_period_year.add(dedup_key)
                     # Normalize metadata fields
+                    item["period"] = period
                     item["fiscalYear"] = int(f_year)
                     item["fiscalQuarter"] = _fiscal_quarter(period)
                     item["periodEndDate"] = _period_end_date(int(f_year), item["fiscalQuarter"])
@@ -313,6 +388,22 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                     item["confidence"] = float(item.get("confidence") or 0.0)
                     item = _normalize_cash_flow_scale(item)
                     cash_flow_items.append(item)
+                else:
+                    for index, existing in enumerate(cash_flow_items):
+                        existing_key = (
+                            str(existing.get("period") or ""),
+                            int(existing.get("fiscalYear") or 0),
+                        )
+                        if existing_key == dedup_key:
+                            item["period"] = period
+                            item["fiscalYear"] = int(f_year)
+                            item["fiscalQuarter"] = _fiscal_quarter(period)
+                            item["periodEndDate"] = _period_end_date(int(f_year), item["fiscalQuarter"])
+                            item["auditStatus"] = _audit_status(period)
+                            item["confidence"] = float(item.get("confidence") or 0.0)
+                            item = _normalize_cash_flow_scale(item)
+                            cash_flow_items[index] = _merge_statement_item(existing, item)
+                            break
 
         except Exception as e:
             print(f"Failed to process attachment {file_name}: {e}")
