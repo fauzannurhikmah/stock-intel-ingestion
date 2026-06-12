@@ -9,6 +9,38 @@ def _build_mock_ai_response():
         "income_statement": [
             {
                 "period": "Q1",
+                "fiscalYear": 2024,
+                "fiscalQuarter": 1,
+                "periodEndDate": "2024-03-31",
+                "auditStatus": "UNAUDITED",
+                "currency": "IDR",
+                "confidence": 0.84,
+                "revenue": 999999999,
+                "cogs": 3248158000000,
+                "grossProfit": None,
+                "operatingExpenses": 9637633000000,
+                "sellingExpenses": None,
+                "generalAdminExpenses": None,
+                "rdExpenses": None,
+                "depreciationAmort": None,
+                "ebit": None,
+                "ebitda": None,
+                "operatingIncome": 21118560000000,
+                "interestExpense": 3248158000000,
+                "interestIncome": 22963761000000,
+                "otherNonOperatingIncome": 6451724000000,
+                "pretaxIncome": 15915029000000,
+                "incomeTaxExpense": 3036522000000,
+                "effectiveTaxRate": 0.19,
+                "netIncome": 12878507000000,
+                "netIncomeAttributable": 12879486000000,
+                "minorityInterest": -979000000,
+                "eps": 104,
+                "epsDiluted": None,
+                "sharesWeightedAvg": None
+            },
+            {
+                "period": "Q1",
                 "fiscalYear": 2025,
                 "fiscalQuarter": 1,
                 "periodEndDate": "2025-03-31",
@@ -28,7 +60,7 @@ def _build_mock_ai_response():
                 "operatingIncome": 21118560000000,
                 "interestExpense": 3248158000000,
                 "interestIncome": 24366718000000,
-                "otherNonOperatingIncome": 0.0,
+                "otherNonOperatingIncome": 7005767000000,
                 "pretaxIncome": 17455662000000,
                 "incomeTaxExpense": 3308672000000,
                 "effectiveTaxRate": 0.19,
@@ -174,10 +206,11 @@ class TestFinancialStatementAiRoute(unittest.TestCase):
         # Income Statement tests
         self.assertEqual(payload["income_statement"]["count"], 1)
         income_item = payload["income_statement"]["items"][0]
-        self.assertEqual(income_item["revenue"], 24366718000000)
+        self.assertEqual(income_item["revenue"], 31372485000000)
         self.assertEqual(income_item["netIncome"], 14146990000000)
         self.assertEqual(income_item["confidence"], 0.95)
         self.assertEqual(income_item["period"], "Q1")
+        self.assertAlmostEqual(income_item["revenueGrowthYoY"], 0.06653, places=5)
 
         # Balance Sheet tests
         self.assertEqual(payload["balance_sheet"]["count"], 1)

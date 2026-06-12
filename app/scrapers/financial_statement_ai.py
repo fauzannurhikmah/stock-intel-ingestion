@@ -60,6 +60,77 @@ def _merge_statement_item(existing: dict, incoming: dict) -> dict:
     return merged
 
 
+def _dedupe_statement_items(items: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+
+    for item in items:
+        period = _normalize_ai_period(item.get("period"))
+        fiscal_year = item.get("fiscalYear")
+        if not period or not isinstance(fiscal_year, int):
+            continue
+
+        key = (period, fiscal_year)
+        if key in seen:
+            continue
+
+        seen.add(key)
+        normalized_item = dict(item)
+        normalized_item["period"] = period
+        normalized_item["fiscalYear"] = fiscal_year
+        normalized_item["fiscalQuarter"] = _fiscal_quarter(period)
+        normalized_item["periodEndDate"] = _period_end_date(fiscal_year, normalized_item["fiscalQuarter"])
+        normalized_item["auditStatus"] = _audit_status(period)
+        deduped.append(normalized_item)
+
+    deduped.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
+    return deduped
+
+
+def _derive_bank_revenue(item: dict) -> dict:
+    interest_income = item.get("interestIncome")
+    other_operating_income = item.get("otherNonOperatingIncome")
+
+    if not isinstance(interest_income, (int, float)):
+        return item
+
+    if isinstance(other_operating_income, (int, float)) and other_operating_income != 0:
+        item["revenue"] = float(interest_income) + float(other_operating_income)
+        return item
+
+    if item.get("revenue") in (None, 0):
+        item["revenue"] = float(interest_income)
+
+    return item
+
+
+def _calculate_revenue_growth(items: list[dict]) -> list[dict]:
+    lookup: dict[tuple[int, int | None], dict] = {}
+    for item in items:
+        fiscal_year = item.get("fiscalYear")
+        fiscal_quarter = item.get("fiscalQuarter")
+        if isinstance(fiscal_year, int):
+            lookup[(fiscal_year, fiscal_quarter if isinstance(fiscal_quarter, int) else None)] = item
+
+    for item in items:
+        fiscal_year = item.get("fiscalYear")
+        fiscal_quarter = item.get("fiscalQuarter")
+        current_revenue = item.get("revenue")
+
+        if not isinstance(fiscal_year, int) or not isinstance(fiscal_quarter, int):
+            item["revenueGrowthYoY"] = None
+            continue
+
+        previous = lookup.get((fiscal_year - 1, fiscal_quarter))
+        previous_revenue = previous.get("revenue") if previous else None
+        if isinstance(current_revenue, (int, float)) and isinstance(previous_revenue, (int, float)) and previous_revenue not in (0, 0.0):
+            item["revenueGrowthYoY"] = round((float(current_revenue) - float(previous_revenue)) / abs(float(previous_revenue)), 6)
+        else:
+            item["revenueGrowthYoY"] = None
+
+    return items
+
+
 def _ai_call(prompt: str) -> dict:
     from config.settings import OPENAI_API_KEY, OPENAI_MODEL
     from utils.ai import _build_client, _safe_json_parse
@@ -101,8 +172,9 @@ def ai_extract_financial_statements(text: str, symbol: str, year: int, sector: s
     1. DETECT THE SCALE/MULTIPLIER: Detect if the numbers in the document are in millions (jutaan), thousands (ribuan), billions (miliaran), or units (satuan). You MUST scale all numeric values to full units (e.g. if currency is IDR and the table is in millions, multiply each number by 1,000,000. So "14,146,990" becomes 14146990000000). Return the final scaled numbers.
     2. PERIOD IDENTIFICATION: Identify the period ("Q1", "Q2", "Q3", "AUDIT"), fiscalYear (e.g., 2025), fiscalQuarter (1, 2, 3, or null for AUDIT), periodEndDate ("YYYY-MM-DD"), auditStatus ("AUDITED" or "UNAUDITED") for each list item.
     3. Return a float value between 0.0 and 1.0 representing your extraction 'confidence' for each list item.
-    4. If a field is not mentioned or not applicable, set its value to null.
-    5. Return ONLY a valid JSON object matching the JSON schema below. Do not include markdown code fences or comments.
+    4. For banking/financial sector companies, use `otherNonOperatingIncome` for "pendapatan operasional lainnya" when present, and calculate `revenue` as `interestIncome + otherNonOperatingIncome`.
+    5. If a field is not mentioned or not applicable, set its value to null.
+    6. Return ONLY a valid JSON object matching the JSON schema below. Do not include markdown code fences or comments.
 
     JSON SCHEMA:
     {{
@@ -115,6 +187,7 @@ def ai_extract_financial_statements(text: str, symbol: str, year: int, sector: s
           "auditStatus": "AUDITED" | "UNAUDITED",
           "currency": "IDR" | "USD",
           "confidence": float,
+          "revenueGrowthYoY": number | null,
           "revenue": number | null,
           "cogs": number | null,
           "grossProfit": number | null,
@@ -318,6 +391,7 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                     # Apply safety derivations
                     item = _normalize_monetary_scale(item)
                     item = _apply_bank_derivations(item)
+                    item = _derive_bank_revenue(item)
                     income_items.append(item)
                 else:
                     for index, existing in enumerate(income_items):
@@ -334,6 +408,7 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
                             item["confidence"] = float(item.get("confidence") or 0.0)
                             item = _normalize_monetary_scale(item)
                             item = _apply_bank_derivations(item)
+                            item = _derive_bank_revenue(item)
                             income_items[index] = _merge_statement_item(existing, item)
                             break
 
@@ -410,12 +485,15 @@ def scrape_financial_statement_ai(symbol: str, year: int, sector: Optional[str] 
             continue
 
     # Sort
-    income_items.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
-    balance_items.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
-    cash_flow_items.sort(key=lambda row: (int(row.get("fiscalYear") or 0), int(row.get("fiscalQuarter") or 99)))
+    income_items = _dedupe_statement_items(income_items)
+    balance_items = _dedupe_statement_items(balance_items)
+    cash_flow_items = _dedupe_statement_items(cash_flow_items)
 
     # Adjust cumulative quarter values for the income statement
     income_items = _adjust_cumulative_quarter_items(income_items)
+    income_items = _calculate_revenue_growth(income_items)
+
+    income_items = [item for item in income_items if int(item.get("fiscalYear") or 0) == year]
 
     return {
         "status": "ok",
